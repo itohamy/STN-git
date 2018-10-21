@@ -13,6 +13,9 @@ from tensorflow.python.framework import ops
 from scipy.linalg import expm_frechet
 import cv2
 from random import randint,uniform
+from tensorflow.contrib import layers
+import tensorflow as tf
+import tensorflow.contrib.layers as lays
 
 '''
 input - a list of desired transformations. 
@@ -119,27 +122,35 @@ def get_param_indexes():
 #this is the stn's localization network
 #here we construct it using a 2-layer FC network.
 def regress_parameters(x,width,keep_prob,activation_func,num_of_params,weight_stddev,num_channels):
-    #We'll setup the two-layer localisation network to figure out the
-    # parameters for an affine transformation of the input
-    # Create variables for fully connected layer
-    W_fc_loc1 = weight_variable([width * width * num_channels,20],weight_stddev)
-    #W_fc_loc1 = tf.Print(W_fc_loc1,[W_fc_loc1],message="W_fc_loc1: ",summarize=100)
-    b_fc_loc1 = bias_variable([20])
-    #b_fc_loc1 = tf.Print(b_fc_loc1,[b_fc_loc1],message="b_fc_loc1: ",summarize=100)
 
-    W_fc_loc2 = weight_variable([20,num_of_params],weight_stddev)
-    # Use identity transformation as starting point
-    b_fc_loc2 = bias_variable([1,num_of_params])
-    # Define the two layer localisation network
-    h_fc_loc1 = activation_func(tf.matmul(x,W_fc_loc1) + b_fc_loc1)
-    #h_fc_loc1 = tf.Print(h_fc_loc1,[h_fc_loc1],message="h_fc_loc1: ",summarize=100)
-    # We can add dropout for regularizing and to reduce overfitting like so:
-    h_fc_loc1_drop = tf.nn.dropout(h_fc_loc1,keep_prob)
-    #h_fc_loc1_drop = tf.Print(h_fc_loc1_drop,[h_fc_loc1_drop],message="h_fc_loc1_drop: ",summarize=100)
-    # Second layer
-    s_fc_loc2 = activation_func(tf.matmul(h_fc_loc1_drop,W_fc_loc2) + b_fc_loc2)
-    #s_fc_loc2 = tf.Print(s_fc_loc2,[s_fc_loc2],message="s_fc_loc2: ",summarize=100)
-    return s_fc_loc2
+    net = tf.reshape(x,shape=[-1,128,128,num_channels])
+    net = lays.conv2d(net,32,[5,5],stride=2,padding='SAME')
+    net = lays.conv2d(net,16,[5,5],stride=2,padding='SAME')
+    net = layers.flatten(net)
+    net = lays.fully_connected(net, 7 ,activation_fn=tf.nn.relu,scope='fc-final')
+
+    # #We'll setup the two-layer localisation network to figure out the
+    # # parameters for an affine transformation of the input
+    # # Create variables for fully connected layer
+    # W_fc_loc1 = weight_variable([width * width * num_channels,20],weight_stddev)
+    # #W_fc_loc1 = tf.Print(W_fc_loc1,[W_fc_loc1],message="W_fc_loc1: ",summarize=100)
+    # b_fc_loc1 = bias_variable([20])
+    # #b_fc_loc1 = tf.Print(b_fc_loc1,[b_fc_loc1],message="b_fc_loc1: ",summarize=100)
+    #
+    # W_fc_loc2 = weight_variable([20,num_of_params],weight_stddev)
+    # # Use identity transformation as starting point
+    # b_fc_loc2 = bias_variable([1,num_of_params])
+    # # Define the two layer localisation network
+    # h_fc_loc1 = activation_func(tf.matmul(x,W_fc_loc1) + b_fc_loc1)
+    # #h_fc_loc1 = tf.Print(h_fc_loc1,[h_fc_loc1],message="h_fc_loc1: ",summarize=100)
+    # # We can add dropout for regularizing and to reduce overfitting like so:
+    # h_fc_loc1_drop = tf.nn.dropout(h_fc_loc1,keep_prob)
+    # #h_fc_loc1_drop = tf.Print(h_fc_loc1_drop,[h_fc_loc1_drop],message="h_fc_loc1_drop: ",summarize=100)
+    # # Second layer
+    # s_fc_loc2 = activation_func(tf.matmul(h_fc_loc1_drop,W_fc_loc2) + b_fc_loc2)
+    # #s_fc_loc2 = tf.Print(s_fc_loc2,[s_fc_loc2],message="s_fc_loc2: ",summarize=100)
+
+    return net #s_fc_loc2
 
 
 def expm(params_matrix,batch_size,num_channels):

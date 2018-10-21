@@ -5,6 +5,7 @@ import glob
 import cv2
 import random
 import matplotlib.pyplot as plt
+import math
 
 class DataProvider:
 
@@ -27,7 +28,7 @@ class DataProvider:
         all_data_cropped = []
         self.train = []
         self.test = []
-        j = 0
+        j = 0 # should be 0
         for img_str in files:
             if j+crop_size <= img_sz:
                 I = cv2.imread(img_str)
@@ -53,14 +54,14 @@ class DataProvider:
                 # self.train.append(img)
                 # self.test.append(img)
 
-                all_data_cropped.append(crop) # test: return it
-                j += 1
+                all_data_cropped.append(crop)
+                #j += 1
             else:
                 j = 0
 
         # prepare the training and test data:
         for i in range(len(all_data_cropped)):
-            I, out = embed_image(all_data_cropped[i], img_sz, crop_size)
+            I, out = embed_image_test(all_data_cropped[i], img_sz, crop_size) #  embed_image(all_data_cropped[i], img_sz, crop_size)
             I = np.reshape(out, (img_sz * img_sz * num_channels)) # change to out
             self.train.append(I)
             self.test.append(I)
@@ -110,6 +111,18 @@ def embed_image(I, img_sz, crop_size):
     W[s_idx:s_idx+crop_size, s_idx:s_idx+crop_size, :] = 1
     # concat img and W, and create an output of size: (img_sz*img_sz*4)
     out = np.concatenate((img, W), axis=2)
+    return img, out
+
+
+def embed_image_test(I, img_sz, crop_size):
+    i = math.floor(10*np.random.random_integers(0, 1))
+    # wrap I and W in an image of size (img_sz*img_sz*3) and (img_sz*img_sz*1) respectively.
+    s_idx = img_sz // 2 - crop_size // 2
+    img = np.ones((img_sz, img_sz, 3))
+    img[s_idx:s_idx+crop_size, i:i+crop_size, :] = I
+    W = np.ones((img_sz, img_sz, 1))  # test: return to: np.zeros((img_sz, img_sz, 1))
+    # concat img and W, and create an output of size: (img_sz*img_sz*4)
+    out = img #np.concatenate((img, W), axis=2)
     return img, out
 
 

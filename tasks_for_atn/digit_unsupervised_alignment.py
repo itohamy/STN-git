@@ -35,15 +35,15 @@ def main():
     # Here you can play with some parameters.
     digit_to_align = 7  #the digit which should we align
     n_epochs = 1
-    iter_per_epoch = 500
+    iter_per_epoch = 200
     batch_size = 64
 
-    num_channels = 4
+    num_channels = 3
 
     # possible trasromations = "r","sc","sh","t","ap","us","fa"
     # see explanations in transformations_helper.py
     requested_transforms = ["t"] #["r","t","sc","sh"]
-    regularizations = {"r":0,"t":0.,"sc":150,"sh":0}
+    regularizations = {"r":0,"t":0.5,"sc":0,"sh":0}
     #    requested_transforms = ["ane"]
     #    regularizations = {"ane":2500}
     #    requested_transforms = ["fa"]
@@ -93,7 +93,7 @@ def main():
 
     device = '/cpu:0'
     with tf.device(device):  #greate the graph
-        loss,logits,transformations,b_s,x,keep_prob,optimizer , a, b= computational_graph(my_learning_rate,
+        loss,logits,transformations,b_s,x,keep_prob,optimizer, a, b = computational_graph(my_learning_rate,
                                                                                     requested_transforms,batch_size,
                                                                                     regularizations,activation_func,
                                                                                     weight_stddev,num_channels)
