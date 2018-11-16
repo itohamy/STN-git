@@ -25,25 +25,28 @@ import time
 import mnist_helper
 from ATN import alignment_transformer_network
 from atn_helpers.tranformations_helper import register_gradient
-#from skimage.transform import warp, AffineTransform
 from data_provider2 import DataProvider
 from Plots import open_figure,PlotImages
+
+
+#from skimage.transform import warp, AffineTransform
 
 
 # %% Load data
 def main():
     # Here you can play with some parameters.
-    digit_to_align = 7  #the digit which should we align
+    digit_to_align = 4  #the digit which should we align
     n_epochs = 1
-    iter_per_epoch = 200
-    batch_size = 64
+    iter_per_epoch = 2 #600
+    batch_size = 64  # 16
 
     num_channels = 3
 
     # possible trasromations = "r","sc","sh","t","ap","us","fa"
     # see explanations in transformations_helper.py
-    requested_transforms = ["t"] #["r","t","sc","sh"]
-    regularizations = {"r":0,"t":0.5,"sc":0,"sh":0}
+    requested_transforms = ["t"]  #["r","t","sc","sh"]
+    #    requested_transforms = ["fa"]
+    regularizations = {"r":0,"t":0.6,"sc":0,"sh":0,"fa":0}  # 0.000005
     #    requested_transforms = ["ane"]
     #    regularizations = {"ane":2500}
     #    requested_transforms = ["fa"]
@@ -62,27 +65,30 @@ def main():
     use_small_mnist = False
     minimal_imgs_per_digit = 10
 
+    alignment_reg = 1000
+
     # param my_learning_rate
     # Gets good results with 1e-4. You can also set the weigts in the transformations_helper file
     # (good results also with 1e-4 initialization)
-    my_learning_rate = 7e-5
+    my_learning_rate = 7e-4
     weight_stddev = 5e-4
 
-    activation_func = "relu"
+    activation_func = "tanh"
 
     prepare_figure()
 
     #measure the time
     start_time = time.time()
 
-    # mnist_path = path_to_reg_mnist #will tell us which dataset to take the digit from later
+    # mnist_path = path_to_reg_mnist  #will tell us which dataset to take the digit from later
     # if use_small_mnist:
     #     mnist_path = path_to_small_mnist
-    #     mnist_helper.create_smaller_mnist(minimal_imgs_per_digit, path_to_small_mnist+"/", path_to_reg_mnist, height,width)
+    #     mnist_helper.create_smaller_mnist(minimal_imgs_per_digit,path_to_small_mnist + "/",path_to_reg_mnist,height,
+    #                                       width)
     #
     # # Load data and take only the desired digit images
-    # params = (digit_to_align, batch_size, height,width, mnist_path, path_to_new_mnist, test_the_alignment_process)
-    # X_train, y_train, X_test, y_test = mnist_helper.get_digit_data(*params)
+    # params = (digit_to_align,batch_size,height,width,mnist_path,path_to_new_mnist,test_the_alignment_process)
+    # X_train,y_train,X_test,y_test = mnist_helper.get_digit_data(*params)
 
     # !!! MINE !!!
     img_sz = 128
@@ -93,15 +99,17 @@ def main():
 
     device = '/cpu:0'
     with tf.device(device):  #greate the graph
-        loss,logits,transformations,b_s,x,keep_prob,optimizer, a, b = computational_graph(my_learning_rate,
-                                                                                    requested_transforms,batch_size,
-                                                                                    regularizations,activation_func,
-                                                                                    weight_stddev,num_channels)
+        loss,logits,transformations,b_s,x,y,keep_prob,optimizer, alignment_loss, trans_regularizer, a, b = computational_graph(my_learning_rate,
+                                                                                      requested_transforms,batch_size,
+                                                                                      regularizations,activation_func,
+                                                                                      weight_stddev,num_channels,
+                                                                                      alignment_reg)
 
     #writer, summary_op = create_summaries(loss, x, logits, b_s)
 
     # We now create a new session to actually perform the initialization the variables:
-    params = (data,iter_per_epoch,X_train,X_test,n_epochs,batch_size,loss,logits,transformations,b_s,x,keep_prob,optimizer,start_time,digit_to_align,img_sz,num_channels, a, b)
+    params = (data,iter_per_epoch,X_train,X_test,n_epochs,batch_size,loss,logits,transformations,b_s,x,y,keep_prob,optimizer,
+              start_time,digit_to_align,img_sz,num_channels, alignment_loss, trans_regularizer, a, b)
     run_session(*params)
 
     #measure the time
@@ -113,9 +121,9 @@ def main():
 # %%
 
 def computational_graph(my_learning_rate,requested_transforms,batch_size,regularizations,activation_func,weight_stddev,
-                        num_channels):
+                        num_channels,alignment_reg):
     x = tf.placeholder(tf.float32,[None,height * width * num_channels])  # input data placeholder for the atn layer
-    # y = tf.placeholder(tf.float32, [None, 1])
+    y = tf.placeholder(tf.float32,[None,1])
     #batch size
     b_s = tf.placeholder(tf.float32,[1,])
 
@@ -127,27 +135,33 @@ def computational_graph(my_learning_rate,requested_transforms,batch_size,regular
     # dimension should not change size.
     keep_prob = tf.placeholder(tf.float32)
     atn = alignment_transformer_network(x,requested_transforms,regularizations,batch_size,width,num_channels,1,
-                                        weight_stddev,activation_func,keep_prob)
-    logits,transformations,alignment_loss,transformations_regularizer , a, b = atn.atn_layer()
+                                        weight_stddev,activation_func,False,1,None)
+    logits,affine_maps = atn.stn_diffeo()
 
-    loss = compute_final_loss(alignment_loss,transformations_regularizer,num_channels)
+    logits = tf.layers.batch_normalization(logits)
+    transformations = atn.get_transformations()
+    transformations_regularizer = atn.compute_transformations_regularization(affine_maps)
+    alignment_loss, a, b = atn.compute_alignment_loss()
+    alignment_loss = alignment_reg * alignment_loss
+
+    loss = compute_final_loss(alignment_loss,transformations_regularizer, num_channels)
     #    loss = mnist_loss + transformations_regularizer
 
     opt = tf.train.AdamOptimizer(learning_rate=my_learning_rate)
     optimizer = opt.minimize(loss)
     #grads = opt.compute_gradients(loss, [b_fc_loc2])
 
-    return loss,logits,transformations,b_s,x,keep_prob,optimizer , a ,b
+    return loss,logits,transformations,b_s,x,y,keep_prob,optimizer, alignment_loss, transformations_regularizer, a, b
 
 
-def compute_final_loss(alignment_loss,transformations_regularizer,num_channels):
-    alignment_loss /= (width * width * num_channels)  # we need this, other wise the alignment loss is to big and we'll completely zoom out and and ruin the input image
+def compute_final_loss(alignment_loss,transformations_regularizer, num_channels):
+    alignment_loss /= (height * width * num_channels)  # we need this, other wise the alignment loss is to big and we'll completely zoom out and and ruin the input image
     return alignment_loss + transformations_regularizer
 
 
 # %%
-def run_session(data,iter_per_epoch,X_train,X_test,n_epochs,batch_size,loss,logits,transformations,b_s,x,keep_prob,
-                optimizer,start_time,digit_to_align,img_sz,num_channels, a, b):
+def run_session(data,iter_per_epoch,X_train,X_test,n_epochs,batch_size,loss,logits,transformations,b_s,x,y,keep_prob,
+                optimizer,start_time,digit_to_align,img_sz,num_channels, alignment_loss, trans_regularizer, a, b):
     config = tf.ConfigProto(allow_soft_placement=True)
     sess = tf.Session(config=config)
     sess.run(tf.global_variables_initializer())
@@ -157,8 +171,11 @@ def run_session(data,iter_per_epoch,X_train,X_test,n_epochs,batch_size,loss,logi
 
     for epoch_i in range(n_epochs):
         for iter_i in range(iter_per_epoch):
-            batch_xs = data.next_batch(batch_size,'train')  # X_train[indices[iter_i]:indices[iter_i+1]]
-            loss_val,theta_val, a_val, b_val = sess.run([loss,transformations, a, b],
+            batch_xs = data.next_batch(batch_size,'train') #X_train[indices[iter_i]:indices[iter_i + 1]]
+            # batch_ys = y_train[indices[iter_i]:indices[iter_i + 1]]
+            # batch_size = batch_ys.size
+
+            loss_val, theta_val, alignment_loss_val, trans_regularizer_val, a_val, b_val = sess.run([loss,transformations, alignment_loss, trans_regularizer, a,b],
                                           feed_dict={
                                               b_s:[batch_size],
                                               x:batch_xs,
@@ -171,9 +188,9 @@ def run_session(data,iter_per_epoch,X_train,X_test,n_epochs,batch_size,loss,logi
             sess.run(optimizer,feed_dict={
                 b_s:[batch_size],x:batch_xs,keep_prob:1.0})
 
-        #Find accuracy on test data
+        #Find align_loss on test data
         print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nrunning test data...")
-        accuracy = 0.
+        align_loss = 0.
         for iter_i in range(batch_size):
             batch_xs = data.next_batch(batch_size,
                                        'train')  #X_test[test_indices[iter_i]:test_indices[iter_i+1]]
@@ -183,63 +200,76 @@ def run_session(data,iter_per_epoch,X_train,X_test,n_epochs,batch_size,loss,logi
                                                         x:batch_xs,
                                                         keep_prob:1.0
                                                     })
-            accuracy += loss_val
-        accuracy /= batch_size
+            align_loss += loss_val
+        align_loss /= batch_size
 
         # plot the reconstructed images and their ground truths (inputs)
         imgs = []
         imgs_test = []
+        Ws = []
+        Ws_test = []
         titles = []
         for i in range(10):
             I = batch_xs[i,...]
             I = np.reshape(I,(img_sz,img_sz,num_channels))
             imgs.append(I[:,:,0:3])
+            #tmp = np.reshape(I[:,:,3:],(img_sz,img_sz))
+            #Ws.append(tmp)
             I = test_imgs[i,...]
             I = np.reshape(I,(img_sz,img_sz,num_channels))
             imgs_test.append(np.abs(I[:,:,0:3]))
+            #tmp = np.reshape(I[:,:,3:],(img_sz,img_sz))
+            #Ws_test.append(tmp)
             titles.append('')
         fig1 = open_figure(1,'Original Images',(7,3))
         PlotImages(1,2,5,1,imgs,titles,'gray',axis=True,colorbar=False)
         fig2 = open_figure(2,'Test Results',(7,3))
         PlotImages(2,2,5,1,imgs_test,titles,'gray',axis=True,colorbar=False)
+        #fig3 = open_figure(3,'Original W',(7,3))
+        #PlotImages(3,2,5,1,Ws,titles,'gray',axis=True,colorbar=False)
+        #fig4 = open_figure(4,'Test W',(7,3))
+        #PlotImages(4,2,5,1,Ws_test,titles,'gray',axis=True,colorbar=False)
         plt.show()
         fig1.savefig('f1.png')
         fig2.savefig('f2.png')
+        #fig3.savefig('f3.png')
+        #fig4.savefig('f4.png')
 
         #print ("theta row 1 is: "+str(theta_val[0,:]))
         #print ("theta row 10 is: "+str(theta_val[9,:]))
-        print('Accuracy (%d): ' % (epoch_i + 1) + str(accuracy) + "\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
-        if np.isnan(accuracy):
+        print('Alignment loss (%d): ' % (epoch_i + 1) + str(align_loss) + "\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
+        if np.isnan(align_loss):
             duration = time.time() - start_time
             print("Total runtime is " + "%02d" % (duration) + " seconds.")
             raise SystemExit
 
     # if update_transformed_mnist:
     #     #Run one forward pass again on the training data, in ordr to create a transformed mnist data
-    #     all_training_imgs = prepare_new_mnist(sess,X_train,y_train,iter_per_epoch,indices,batch_ys,batch_xs,loss,logits,transformations,b_s,x,y,keep_prob)
+    #     all_training_imgs = prepare_new_mnist(sess,X_train,y_train,iter_per_epoch,indices,batch_ys,batch_xs,loss,logits,
+    #                                           transformations,b_s,x,y,keep_prob)
     #
     # #show some of the test data before and after running the model which was learned
-    # all_test_imgs = None#Find accuracy on test data
+    # all_test_imgs = None  #Find align_loss on test data
     # print("\n\nPreparing test images...")
     # for iter_i in range(test_iter_per_epoch):
-    #     batch_xs = X_test[test_indices[iter_i]:test_indices[iter_i+1]]
-    #     batch_ys = y_test[test_indices[iter_i]:test_indices[iter_i+1]]
+    #     batch_xs = X_test[test_indices[iter_i]:test_indices[iter_i + 1]]
+    #     batch_ys = y_test[test_indices[iter_i]:test_indices[iter_i + 1]]
     #     batch_size = batch_ys.size
     #
     #     loss_val,test_imgs = sess.run([loss,logits],
-    #                             feed_dict={
-    #                                          b_s: [batch_size],
-    #                                          x: batch_xs,
-    #                                          y: batch_ys,
-    #                                          keep_prob: 1.0
-    #                                        })
+    #                                   feed_dict={
+    #                                       b_s:[batch_size],
+    #                                       x:batch_xs,
+    #                                       y:batch_ys,
+    #                                       keep_prob:1.0
+    #                                   })
     #     if all_test_imgs is not None:
     #         all_test_imgs = np.concatenate((all_test_imgs,test_imgs))
     #     else:
     #         all_test_imgs = test_imgs
     # show_test_imgs(all_test_imgs,X_test,height,width)
     #
-    # if update_transformed_mnist: #create a new mnist data set with the newly aligned data
+    # if update_transformed_mnist:  #create a new mnist data set with the newly aligned data
     #     create_mnist_dataset(y_train,y_test,path_to_new_mnist,digit_to_align,all_training_imgs,all_test_imgs)
 
     sess.close()
@@ -288,11 +318,11 @@ def show_test_imgs(all_test_imgs,X_test,height,width):
         original_test_img = np.reshape(X_test[ind,:],(height,width))
         alinged_test_img = np.reshape(all_test_imgs[ind,:],(height,width))
         images.append([original_test_img,alinged_test_img])
-        messages.append(["Test image {} before".format(ind),"Test image {} after".format(ind)])
+        messages.append(["",""])
     for row in range(1,rows + 1):
         ind = row * 2
         for i in range(2):
-            PlotImage(rows,cols,ind - 1 + i,messages[row - 1][i],images[row - 1][i],'jet')
+            PlotImage(rows,cols,ind - 1 + i,messages[row - 1][i],images[row - 1][i],'gray')
 
 
 def PlotImage(rows,cols,ind,title,image,color):

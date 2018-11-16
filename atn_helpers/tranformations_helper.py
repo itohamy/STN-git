@@ -13,9 +13,6 @@ from tensorflow.python.framework import ops
 from scipy.linalg import expm_frechet
 import cv2
 from random import randint,uniform
-from tensorflow.contrib import layers
-import tensorflow as tf
-import tensorflow.contrib.layers as lays
 
 '''
 input - a list of desired transformations. 
@@ -47,7 +44,7 @@ output -
 '''
 
 
-def transfromation_parameters_regressor(transformations,images,keep_prob,width,batch_size,num_channels,
+def transfromation_parameters_regressor(transformations,images,keep_prob,width,batch_size,num_channels=1,
                                         activation_func="relu",weight_stddev=5e-4):
     activation = getattr(tf.nn,activation_func)
 
@@ -66,13 +63,18 @@ def transfromation_parameters_regressor(transformations,images,keep_prob,width,b
     #if there is rotatation, we only need one param for sheer, we will learn both parameters,
     #since all the cases are covered this way, and its not so expensive to learn this one too.
     num_of_params = 7
-    params = regress_parameters(images,width,keep_prob,activation,num_of_params,weight_stddev,num_channels)
+    if transformations[
+        0] != "ane":  #since the exponent should be taken, we'll learn the parameters up front. when ane appears, it is expected to be the only transformation requested, so this is valid.
+        #        params = regress_parameters_conv(images,width,keep_prob,activation,num_of_params, weight_stddev, num_channels)
+        params = regress_parameters(images,width,keep_prob,activation,num_of_params,weight_stddev,num_channels)
+    else:
+        params = learn_all_params_conv(images,width,keep_prob,activation,weight_stddev,num_channels)
 
     print("Going to...")
     for transformation in transformations:
         if transformation in methods:
             valid_input = True
-            transformation_exponentiol,orig_transformation = methods[transformation](params)
+            transformation_exponentiol,orig_transformation = methods[transformation](params,batch_size,num_channels)
             transform_maps.append(transformation_exponentiol)
             #transform_maps_dict[transformation] = tf.reshape(tf.slice(transform_maps[-1], [0, 0, 0], [-1, 2, 3]), [-1, 6])
             transform_maps_dict[transformation] = tf.reshape(orig_transformation,[-1,6])
@@ -122,35 +124,25 @@ def get_param_indexes():
 #this is the stn's localization network
 #here we construct it using a 2-layer FC network.
 def regress_parameters(x,width,keep_prob,activation_func,num_of_params,weight_stddev,num_channels):
+    with tf.variable_scope("atn"):
+        #We'll setup the two-layer localisation network to figure out the
+        # parameters for an affine transformation of the input
+        # Create variables for fully connected layer
+        W_fc_loc1 = weight_variable([width * width * num_channels,20],weight_stddev)
+        b_fc_loc1 = bias_variable([20])
 
-    net = tf.reshape(x,shape=[-1,128,128,num_channels])
-    net = lays.conv2d(net,32,[5,5],stride=2,padding='SAME')
-    net = lays.conv2d(net,16,[5,5],stride=2,padding='SAME')
-    net = layers.flatten(net)
-    net = lays.fully_connected(net, 7 ,activation_fn=tf.nn.relu,scope='fc-final')
+        W_fc_loc2 = weight_variable([20,num_of_params],weight_stddev)
+        # Use identity transformation as starting point
+        b_fc_loc2 = bias_variable([1,num_of_params])
 
-    # #We'll setup the two-layer localisation network to figure out the
-    # # parameters for an affine transformation of the input
-    # # Create variables for fully connected layer
-    # W_fc_loc1 = weight_variable([width * width * num_channels,20],weight_stddev)
-    # #W_fc_loc1 = tf.Print(W_fc_loc1,[W_fc_loc1],message="W_fc_loc1: ",summarize=100)
-    # b_fc_loc1 = bias_variable([20])
-    # #b_fc_loc1 = tf.Print(b_fc_loc1,[b_fc_loc1],message="b_fc_loc1: ",summarize=100)
-    #
-    # W_fc_loc2 = weight_variable([20,num_of_params],weight_stddev)
-    # # Use identity transformation as starting point
-    # b_fc_loc2 = bias_variable([1,num_of_params])
-    # # Define the two layer localisation network
-    # h_fc_loc1 = activation_func(tf.matmul(x,W_fc_loc1) + b_fc_loc1)
-    # #h_fc_loc1 = tf.Print(h_fc_loc1,[h_fc_loc1],message="h_fc_loc1: ",summarize=100)
-    # # We can add dropout for regularizing and to reduce overfitting like so:
-    # h_fc_loc1_drop = tf.nn.dropout(h_fc_loc1,keep_prob)
-    # #h_fc_loc1_drop = tf.Print(h_fc_loc1_drop,[h_fc_loc1_drop],message="h_fc_loc1_drop: ",summarize=100)
-    # # Second layer
-    # s_fc_loc2 = activation_func(tf.matmul(h_fc_loc1_drop,W_fc_loc2) + b_fc_loc2)
-    # #s_fc_loc2 = tf.Print(s_fc_loc2,[s_fc_loc2],message="s_fc_loc2: ",summarize=100)
+        # Define the two layer localisation network
+        h_fc_loc1 = activation_func(tf.matmul(x,W_fc_loc1) + b_fc_loc1)
+        # We can add dropout for regularizing and to reduce overfitting like so:
+        h_fc_loc1_drop = tf.nn.dropout(h_fc_loc1,keep_prob)
+        # Second layer
+        s_fc_loc2 = activation_func(tf.matmul(h_fc_loc1_drop,W_fc_loc2) + b_fc_loc2)
 
-    return net #s_fc_loc2
+        return s_fc_loc2
 
 
 def expm(params_matrix,batch_size,num_channels):
@@ -213,6 +205,10 @@ def weight_variable(shape,stddev):
     return tf.Variable(initial)
 
 
+# I tried also xavier (since Im using tanh) but didnt work.
+#    initializer = tf.contrib.layers.xavier_initializer()
+#    return tf.Variable(initializer(shape))
+
 def bias_variable(shape):
     initial = tf.constant(0.1,shape=shape)
     return tf.Variable(initial)
@@ -220,7 +216,7 @@ def bias_variable(shape):
 
 # %%
 # Runs
-def rotation(params):
+def rotation(params,batch_size,num_channels):
     print("Rotate !!!")
     param_indexes = get_param_indexes()
     params = tf.slice(params,[0,param_indexes['r']],[-1,1])
@@ -233,12 +229,18 @@ def rotation(params):
         [tf.cos(params),-tf.sin(params),zero_vec,tf.sin(params),tf.cos(params),zero_vec,zero_vec,zero_vec,one_vec],1))
     exp_params = tf.reshape(exp_params,[-1,3,3])
 
+    ###############################################################################################################################
+    # if you want to use the expm function instead of using the closed formula for the matrix exponential, uncomment the following:
+    #    exp_params = expm(params_matrix, batch_size, num_channels)
+    #    exp_params = tf.cast(exp_params, tf.float32)
+    ###############################################################################################################################
+
     return exp_params,params_matrix
 
 
 # %%
 # Runs
-def scaling(params):
+def scaling(params,batch_size,num_channels):
     print("Scale !!!")
 
     #separate the 2 parameters
@@ -255,6 +257,12 @@ def scaling(params):
     exp_params = (
         tf.concat([tf.exp(vec1),zero_vec,zero_vec,zero_vec,tf.exp(vec2),zero_vec,zero_vec,zero_vec,one_vec],1))
     exp_params = tf.reshape(exp_params,[-1,3,3])
+
+    ###############################################################################################################################
+    # if you want to use the expm function instead of using the closed formula for the matrix exponential, uncomment the following:
+    #    exp_params = expm(params_matrix, batch_size, num_channels)
+    #    exp_params = tf.cast(exp_params, tf.float32)
+    ###############################################################################################################################
 
     return exp_params,params_matrix
 
@@ -324,7 +332,7 @@ def scaling(params):
 #    return exp_params, params_matrix
 
 # Runs
-def sheer(params):
+def sheer(params,batch_size,num_channels):
     #this covers the case where sheer was requested without rotation, in which case we need
     #to learn 2 parameter2 to get the sheer in both directions.
 
@@ -332,12 +340,14 @@ def sheer(params):
     #separate the 2 parameters
     param_indexes = get_param_indexes()
     vec1 = tf.slice(params,[0,param_indexes['sh1']],[-1,1])
+    vec1 = tf.abs(
+        vec1)  # TODO check if this is needed. I think otherwise we can get after the multiplication a matrix without an inverse, since we can get negative values..
     vec2 = tf.slice(params,[0,param_indexes['sh2']],[-1,1])
+    vec2 = tf.abs(
+        vec2)  # TODO check if this is needed. I think otherwise we can get after the multiplication a matrix without an inverse, since we can get negative values..
     # In the next line we add e^-6 to the zero vec, as a workaround to avoid nan values.
     # Without this, the zero vector causes nan values in the back propogation.
     zero_vec = tf.zeros_like(vec1)
-    # this is what we'll return to the regularization function which wants the params to be zero so that the exp will be the unit matrix
-    params_matrix = (tf.concat([zero_vec,vec1,zero_vec,vec2,zero_vec,zero_vec],1))
     #    params_matrix1 = (tf.concat([zero_vec, vec1, zero_vec, zero_vec, zero_vec, zero_vec], 1))
     #    params_matrix2 = (tf.concat([zero_vec, zero_vec, zero_vec, vec2, zero_vec, zero_vec], 1))
 
@@ -350,12 +360,37 @@ def sheer(params):
 
     exp_params = tf.matmul(exp_params1,exp_params2)
 
+    # this is what we'll return to the regularization function which wants the params to be zero so that the exp will be the unit matrix
+    params_matrix = (tf.concat([one_vec,vec1,zero_vec,vec2,one_vec,zero_vec],1))
+
     return exp_params,params_matrix
+
+
+###############################################################################################################################
+###############################################################################################################################
+# if you want to use the expm function instead of using the closed formula for the matrix exponential, uncomment the following (and dont forget to update the transformation_regularization function below):
+#
+#    # In the next line we add e^-6 to the zero vec, as a workaround to avoid nan values.
+#    # Without this, the zero vector causes nan values in the back propogation.
+#    zero_vec = tf.zeros_like(vec1)
+#    params_matrix1 = (tf.concat([zero_vec, vec1, zero_vec, zero_vec, zero_vec, zero_vec], 1))
+#    params_matrix2 = (tf.concat([zero_vec, zero_vec, zero_vec, vec2, zero_vec, zero_vec], 1))
+#    exp_params1 = expm(params_matrix1, batch_size=16, num_channels=1)
+#    exp_params2 = expm(params_matrix2, batch_size=16, num_channels=1)
+#
+#    exp_params = tf.cast(tf.matmul(exp_params1, exp_params2), tf.float32)
+#
+#    # this is what we'll return to the regularization function which wants the params to be zero so that the exp will be the unit matrix
+#    params_matrix = (tf.concat([zero_vec, vec1, zero_vec, vec2, zero_vec, zero_vec], 1))
+#
+#    return exp_params, params_matrix
+###############################################################################################################################
+###############################################################################################################################
 
 
 # %%
 # Runs
-def translation(params):
+def translation(params,batch_size,num_channels):
     print("Translate !!!")
     #separate the 2 parameters
     param_indexes = get_param_indexes()
@@ -365,12 +400,23 @@ def translation(params):
     # In the next line we add e^-6 to the zero vec, as a workaround to avoid nan values.
     # Without this, the zero vector causes nan values in the back propogation.
     zero_vec = tf.zeros_like(vec1)
-    params_matrix = (tf.concat([zero_vec,zero_vec,vec1,zero_vec,zero_vec,vec2],1))
-    #params_matrix = tf.Print(params_matrix,[params_matrix],message="params_matrix: ",summarize=100)
 
     one_vec = tf.ones_like(vec1)
+    params_matrix = (tf.concat([one_vec,zero_vec,vec1,zero_vec,one_vec,vec2],1))
     exp_params = (tf.concat([one_vec,zero_vec,vec1,zero_vec,one_vec,vec2,zero_vec,zero_vec,one_vec],1))
     exp_params = tf.reshape(exp_params,[-1,3,3])
+
+    ###############################################################################################################################
+    # if you want to use the expm function instead of using the closed formula for the matrix exponential, uncomment the following (and dont forget to update the transformation_regularization function below):
+    #    # In the next line we add e^-6 to the zero vec, as a workaround to avoid nan values.
+    #    # Without this, the zero vector causes nan values in the back propogation.
+    #    zero_vec = tf.zeros_like(vec1)
+    #    # this is what we'll return to the regularization function which wants the params to be zero so that the exp will be the unit matrix
+    #    params_matrix = (tf.concat([zero_vec, zero_vec, vec1, zero_vec, zero_vec, vec2], 1))
+    #    exp_params = expm(params_matrix, batch_size, num_channels)
+    #
+    #    exp_params = tf.cast(exp_params, tf.float32)
+    ###############################################################################################################################
 
     return exp_params,params_matrix
 
@@ -413,10 +459,10 @@ def area_preserving(x,width,keep_prob,batch_size,activation_func,weight_stddev,n
 
 # %%
 # Runs
-def full_affine(x,width,keep_prob,batch_size,activation_func,weight_stddev,num_channels):
+def full_affine(params,batch_size,num_channels):
     print("complete affine !!!")
 
-    params_matrix = learn_all_params(x,width,keep_prob,batch_size,activation_func,weight_stddev,num_channels)
+    params_matrix = tf.slice(params,[0,0],[-1,6])
 
     exp_params = expm(params_matrix,batch_size,num_channels)
 
@@ -425,10 +471,10 @@ def full_affine(x,width,keep_prob,batch_size,activation_func,weight_stddev,num_c
 
 # %%
 # Runs
-def affine_no_exp(x,width,keep_prob,batch_size,activation_func,weight_stddev,num_channels):
+def affine_no_exp(params,batch_size,num_channels):
     print("Running STN without matrix exponential !!!")
 
-    params = learn_all_params(x,width,keep_prob,batch_size,activation_func,weight_stddev,num_channels)
+    #    params = learn_all_params(x, width, keep_prob, batch_size, activation_func, weight_stddev, num_channels)
 
     #    #need to append another row sof [0,0,1]
     #    #separate the 2 parameters
@@ -437,6 +483,8 @@ def affine_no_exp(x,width,keep_prob,batch_size,activation_func,weight_stddev,num
     #    one_vec = tf.ones_like(vec1)
     #    params_matrix = (tf.concat([params, zero_vec, zero_vec, one_vec], 1))
     #    params_matrix = tf.reshape(params_matrix, [-1, 3, 3])
+
+    params = tf.slice(params,[0,0],[-1,6])
 
     params_matrix = tf.reshape(params,[-1,2,3])
 
@@ -449,7 +497,7 @@ def affine_no_exp(x,width,keep_prob,batch_size,activation_func,weight_stddev,num
 
 #this is just another way to learn all 6 params without having to concat the vectors learned.
 #can also just concat (like we did for scaling for example).
-def learn_all_params(x,width,keep_prob,batch_size,activation_func,weight_stddev,num_channels):
+def learn_all_params(x,width,keep_prob,activation_func,weight_stddev,num_channels):
     #We'll setup the two-layer localisation network to figure out the
     # parameters for an affine transformation of the input
     # Create variables for fully connected layer
@@ -471,6 +519,97 @@ def learn_all_params(x,width,keep_prob,batch_size,activation_func,weight_stddev,
     h_fc_loc2 = activation_func(tf.matmul(h_fc_loc1_drop,W_fc_loc2) + b_fc_loc2)
 
     return h_fc_loc2
+
+
+#this is the stn's localization network
+#here we construct it using a 4-layer CNN network.
+def learn_all_params_conv(x,input_size,keep_prob,activation,weight_stddev,num_channels):
+    num_of_params = 6
+
+    # Convolutional Layer 1.
+    filter_size1 = 5
+    num_filters1 = 32
+
+    # Convolutional Layer 2.
+    filter_size2 = 5
+    num_filters2 = 32
+
+    # Fully-connected layer.
+    fc_size = 32
+
+    # The convolutional layers expect x to be encoded as a 4-dim tensor so we have to
+    #reshape it so its shape is instead [num_images, img_height, img_width, num_channels]
+    input_images = tf.reshape(x,shape=[-1,input_size,input_size,num_channels])
+
+    layer_conv1,weights_conv1 = \
+        new_conv_layer(input=input_images,
+                       num_input_channels=num_channels,
+                       filter_size=filter_size1,
+                       num_filters=num_filters1,
+                       weight_stddev=weight_stddev,
+                       use_pooling=True)
+
+    layer_conv2,weights_conv2 = \
+        new_conv_layer(input=layer_conv1,
+                       num_input_channels=num_filters1,
+                       filter_size=filter_size2,
+                       num_filters=num_filters2,
+                       weight_stddev=weight_stddev,
+                       use_pooling=True)
+
+    #before sending the input to a non-convolutional layer, need to re-flatten it
+    #(need to undo what we did in the reshape before the convolutional layer above)
+    layer_flat,num_features = flatten_layer(layer_conv2)
+
+    layer_fc1 = new_fc_layer(input=layer_flat,
+                             num_inputs=num_features,
+                             num_outputs=fc_size,
+                             weight_stddev=weight_stddev,
+                             use_relu=True)
+    layer_fc1_drop = tf.nn.dropout(layer_fc1,keep_prob)
+
+    layer_fc2 = new_fc_layer(input=layer_fc1_drop,
+                             num_inputs=fc_size,
+                             num_outputs=fc_size,
+                             weight_stddev=weight_stddev,
+                             use_relu=True)
+    layer_fc2_drop = tf.nn.dropout(layer_fc2,keep_prob)
+
+    layer_fc2 = unit_fc_layer(input=layer_fc2_drop,
+                              num_inputs=fc_size,
+                              num_outputs=num_of_params,
+                              weight_stddev=weight_stddev,
+                              use_relu=False)
+
+    return layer_fc2
+
+
+def unit_fc_layer(input,  # The previous layer.
+                  num_inputs,  # Num. inputs from prev. layer.
+                  num_outputs,  # Num. outputs.
+                  weight_stddev,
+                  use_relu=True):  # Use Rectified Linear Unit (ReLU)?
+
+    # Create new weights and biases.
+    weights = weight_variable(shape=[num_inputs,num_outputs],stddev=weight_stddev)
+    # Use identity transformation as starting point
+    initial = np.array([[1.,0,0],[0,1.,0]])
+    initial = initial.astype('float32')
+    initial = initial.flatten()
+    biases = tf.Variable(initial_value=initial,name='b_fc_loc2')
+
+    # Calculate the layer as the matrix multiplication of
+    # the input and weights, and then add the bias-values.
+    layer = tf.matmul(input,weights) + biases
+
+    # Use ReLU?
+    if use_relu:
+        layer = tf.nn.relu(layer)
+
+    return layer
+
+
+# %%
 
 
 def correct_transformations_order(transformations,transform_maps_dict):
@@ -553,15 +692,18 @@ def transformation_regularization(affine_maps,regularizations):
     for transformation in transformations:
         if transformation in affine_maps:
             maps = affine_maps[transformation]
-            if transformation == "ane":
-                return tf.reduce_sum(regularizations[transformation] * tf.square(
-                    tf.subtract(tf.reduce_mean(maps,0),unit_transformation)))
-            elif transformation == "sc":
-                l2_l1 = l2_l1_func(maps)
-                reg = regularizations[transformation] * tf.reduce_sum(tf.reduce_sum(l2_l1,0))
-            else:
-                reg = regularizations[transformation] * tf.reduce_sum(tf.reduce_sum(tf.square(maps),1),0)
-            stable_transformations += reg
+            if transformation == "sh" or transformation == "t" or transformation == "ane":
+                # for these transformation matrices we dind't use the matrix exponential, so need to compare the output transformation to the unit matrix
+                # for the "ane" case we'll allow flipping in one direction (= negative determinant), so a matrix like [[-1,0,0],[0,1,0]] with a negative determinant, is allowed.
+                maps = tf.abs(maps)
+                stable_transformations += regularizations[transformation] * tf.reduce_sum(
+                    tf.square(tf.subtract(tf.reduce_mean(maps,0),unit_transformation)))
+            #            elif transformation == "sc": # testign for scaling, change the "scadadel" to "sc"
+            #                l2_l1 = l2_l1_func(maps)
+            #               stable_transformations += regularizations[transformation]*tf.reduce_sum(tf.reduce_sum(l2_l1, 0))
+            else:  # for these we use the exponent, so need to compare the matrix before the exponent to the zero matrix
+                stable_transformations += regularizations[transformation] * tf.reduce_sum(
+                    tf.reduce_sum(tf.square(maps),1),0)
     #    #scaling_lamda = 0.02
     #    scaling_lamda = 10
     #    translation_lamda = 30
@@ -586,16 +728,14 @@ def transformation_regularization(affine_maps,regularizations):
 
 def l2_l1_func(
         maps):  #this function takes the square of all values greater than zero, and the absolute of all those smaller than zero
-    #    m1 = tf.minimum(maps, 0)
-    #    m1 = tf.square(tf.square(m1))
-    #    m1 *= 0
-    #    m2 = tf.maximum(maps, 0)
-    #    m2 = tf.abs(m2)
-    #    m2 *= 1e+16
-    maps = tf.maximum(maps,0)
-    maps = tf.square(maps)
-    #    return tf.add(m1,m2)
-    return maps
+    m1 = tf.maximum(maps,0)
+    #    m1 = tf.square(m1)
+    m2 = tf.minimum(maps,0)
+    m2 = tf.abs(m2)
+    #    m2 *= 1e-5
+    m2 * 0
+    return tf.add(m1,m2)
+    return m1
 
 
 def get_maps(affine_maps,opt1,opt2):
@@ -642,64 +782,101 @@ def cv2_clipped_zoom(img,zoom_factor):
 # %%
 
 #this is the stn's localization network
+#here we construct it using a 3-layer FC network.
+def regress_parameters_fc(x,width,keep_prob,activation_func,num_of_params,weight_stddev,num_channels):
+    with tf.variable_scope("atn"):
+        #We'll setup the two-layer localisation network to figure out the
+        # parameters for an affine transformation of the input
+        # Create variables for fully connected layer
+        W_fc_loc1 = weight_variable([width * width * num_channels,32],weight_stddev)
+        b_fc_loc1 = bias_variable([32])
+
+        W_fc_loc2 = weight_variable([32,32],weight_stddev)
+        # Use identity transformation as starting point
+        b_fc_loc2 = bias_variable([1,32])
+
+        W_fc_loc3 = weight_variable([32,num_of_params],weight_stddev)
+        # Use identity transformation as starting point
+        b_fc_loc3 = bias_variable([1,num_of_params])
+
+        # Define the two layer localisation network
+        h_fc_loc1 = activation_func(tf.matmul(x,W_fc_loc1) + b_fc_loc1)
+        # We can add dropout for regularizing and to reduce overfitting like so:
+        h_fc_loc1_drop = tf.nn.dropout(h_fc_loc1,keep_prob)
+
+        # Define the two layer localisation network
+        h_fc_loc2 = activation_func(tf.matmul(h_fc_loc1_drop,W_fc_loc2) + b_fc_loc2)
+        # We can add dropout for regularizing and to reduce overfitting like so:
+        h_fc_loc2_drop = tf.nn.dropout(h_fc_loc2,keep_prob)
+
+        # Third layer
+        s_fc_loc3 = activation_func(tf.matmul(h_fc_loc2_drop,W_fc_loc3) + b_fc_loc3)
+
+        return s_fc_loc3
+
+
+# %%
+
+#this is the stn's localization network
 #here we construct it using a 4-layer CNN network.
 def regress_parameters_conv(x,input_size,keep_prob,activation_func,num_of_params,weight_stddev,num_channels):
-    # Convolutional Layer 1.
-    filter_size1 = 5
-    num_filters1 = 32
+    with tf.variable_scope("atn"):
+        # Convolutional Layer 1.
+        filter_size1 = 5
+        num_filters1 = 32
 
-    # Convolutional Layer 2.
-    filter_size2 = 5
-    num_filters2 = 32
+        # Convolutional Layer 2.
+        filter_size2 = 5
+        num_filters2 = 32
 
-    # Fully-connected layer.
-    fc_size = 32
+        # Fully-connected layer.
+        fc_size = 32
 
-    # The convolutional layers expect x to be encoded as a 4-dim tensor so we have to
-    #reshape it so its shape is instead [num_images, img_height, img_width, num_channels]
-    input_images = tf.reshape(x,shape=[-1,input_size,input_size,num_channels])
+        # The convolutional layers expect x to be encoded as a 4-dim tensor so we have to
+        #reshape it so its shape is instead [num_images, img_height, img_width, num_channels]
+        input_images = tf.reshape(x,shape=[-1,input_size,input_size,num_channels])
 
-    layer_conv1,weights_conv1 = \
-        new_conv_layer(input=input_images,
-                       num_input_channels=num_channels,
-                       filter_size=filter_size1,
-                       num_filters=num_filters1,
-                       weight_stddev=weight_stddev,
-                       use_pooling=True)
+        layer_conv1,weights_conv1 = \
+            new_conv_layer(input=input_images,
+                           num_input_channels=num_channels,
+                           filter_size=filter_size1,
+                           num_filters=num_filters1,
+                           weight_stddev=weight_stddev,
+                           use_pooling=True)
 
-    layer_conv2,weights_conv2 = \
-        new_conv_layer(input=layer_conv1,
-                       num_input_channels=num_filters1,
-                       filter_size=filter_size2,
-                       num_filters=num_filters2,
-                       weight_stddev=weight_stddev,
-                       use_pooling=True)
+        layer_conv2,weights_conv2 = \
+            new_conv_layer(input=layer_conv1,
+                           num_input_channels=num_filters1,
+                           filter_size=filter_size2,
+                           num_filters=num_filters2,
+                           weight_stddev=weight_stddev,
+                           use_pooling=True)
 
-    #before sending the input to a non-convolutional layer, need to re-flatten it
-    #(need to undo what we did in the reshape before the convolutional layer above)
-    layer_flat,num_features = flatten_layer(layer_conv2)
+        #before sending the input to a non-convolutional layer, need to re-flatten it
+        #(need to undo what we did in the reshape before the convolutional layer above)
+        layer_flat,num_features = flatten_layer(layer_conv2)
 
-    layer_fc1 = new_fc_layer(input=layer_flat,
-                             num_inputs=num_features,
-                             num_outputs=fc_size,
-                             weight_stddev=weight_stddev,
-                             use_relu=True)
-    layer_fc1_drop = tf.nn.dropout(layer_fc1,keep_prob)
+        layer_fc1 = new_fc_layer(input=layer_flat,
+                                 num_inputs=num_features,
+                                 num_outputs=fc_size,
+                                 weight_stddev=weight_stddev,
+                                 use_relu=True)
+        layer_fc1_drop = tf.nn.dropout(layer_fc1,keep_prob)
 
-    layer_fc2 = new_fc_layer(input=layer_fc1_drop,
-                             num_inputs=fc_size,
-                             num_outputs=fc_size,
-                             weight_stddev=weight_stddev,
-                             use_relu=True)
-    layer_fc2_drop = tf.nn.dropout(layer_fc2,keep_prob)
+        layer_fc2 = new_fc_layer(input=layer_fc1_drop,
+                                 num_inputs=fc_size,
+                                 num_outputs=fc_size,
+                                 weight_stddev=weight_stddev,
+                                 use_relu=True)
+        layer_fc2_drop = tf.nn.dropout(layer_fc2,keep_prob)
 
-    layer_fc2 = new_fc_layer(input=layer_fc2_drop,
-                             num_inputs=fc_size,
-                             num_outputs=num_of_params,
-                             weight_stddev=weight_stddev,
-                             use_relu=False)
+        layer_fc2 = new_fc_layer(input=layer_fc2_drop,
+                                 num_inputs=fc_size,
+                                 num_outputs=num_of_params,
+                                 weight_stddev=weight_stddev,
+                                 use_relu=False)
 
-    return layer_fc2
+        return layer_fc2
 
 
 def new_conv_layer(input,  # The previous layer.
